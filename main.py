@@ -4,6 +4,17 @@ import yt_dlp
 import asyncio
 import webserver
 import os
+import subprocess
+
+# Check if FFmpeg is installed
+def check_ffmpeg():
+    try:
+        output = subprocess.check_output('ffmpeg -version', shell=True)
+        print(output.decode())
+    except Exception as e:
+        print(f"FFmpeg error: {e}")
+
+check_ffmpeg()
 
 intents = discord.Intents.default()
 intents.message_content = True
