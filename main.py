@@ -10,15 +10,6 @@ import subprocess
 import random
 from datetime import datetime, timedelta
 
-def check_ffmpeg():
-    try:
-        output = subprocess.check_output('ffmpeg -version', shell=True)
-        print(output.decode())
-    except Exception as e:
-        print(f"FFmpeg error: {e}")
-
-check_ffmpeg()
-
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
@@ -300,6 +291,54 @@ class MusicBot(commands.Cog):
         self.loop_mode = not self.loop_mode
         self.reset_inactivity_timer()
         await interaction.followup.send(f"🔄 Loop mode {'enabled' if self.loop_mode else 'disabled'}", ephemeral=True)
+
+    async def help(self, ctx):
+        embed = discord.Embed(
+            title="🎵 Music Bot Commands",
+            description="Here's what I can do!",
+            color=discord.Color.blue()
+        )
+
+        # Music commands
+        music_commands = """
+        **!play** `<song name/URL>`
+        → Plays a song or adds it to the queue
+        
+        **!queue**
+        → Shows the current queue and song progress
+        
+        **!loop**
+        → Toggles loop mode for the current song
+        """
+        embed.add_field(name="📀 Music Commands", value=music_commands, inline=False)
+
+        # Button controls
+        button_controls = """
+        **⏯️ Pause/Resume**
+        → Pauses or resumes the current song
+        
+        **⏹️ Stop**
+        → Stops playback and clears the queue
+        
+        **⏭️ Skip**
+        → Skips to the next song
+        
+        **🔄 Loop**
+        → Toggles loop mode
+        
+        **🔀 Shuffle**
+        → Shuffles the current queue
+        """
+        embed.add_field(name="🎛️ Button Controls", value=button_controls, inline=False)
+
+        # Additional info
+        info = """
+        • Bot automatically leaves after 3 minutes of inactivity
+        • Use Discord's user volume controls to adjust the bot's volume
+        """
+        embed.add_field(name="ℹ️ Additional Info", value=info, inline=False)
+
+        await ctx.send(embed=embed)
 
     def format_duration(self, seconds):
         minutes, seconds = divmod(int(seconds), 60)
