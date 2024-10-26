@@ -7,9 +7,9 @@ import asyncio
 import webserver
 import os
 import subprocess
+import random
 from datetime import datetime
 
-# Previous FFmpeg check and options remain the same
 def check_ffmpeg():
     try:
         output = subprocess.check_output('ffmpeg -version', shell=True)
@@ -116,10 +116,20 @@ class MusicBot(commands.Cog):
             embed.add_field(name="Requested by", value=self.now_playing['requester'])
             embed.set_thumbnail(url=self.now_playing['thumbnail'])
 
-            # Create views with controls
+            # Create a single view for all controls
+            view = discord.ui.View(timeout=None)
+            
+            # Add all control buttons to the same view
             music_controls = MusicControls(self)
             volume_controls = VolumeControls(self)
             queue_controls = QueueControls(self)
+            
+            for item in music_controls.children:
+                view.add_item(item)
+            for item in volume_controls.children:
+                view.add_item(item)
+            for item in queue_controls.children:
+                view.add_item(item)
 
             if self.current_message:
                 try:
@@ -127,14 +137,10 @@ class MusicBot(commands.Cog):
                 except:
                     pass
 
-            self.current_message = await ctx.send(
-                embed=embed,
-                views=[music_controls, volume_controls, queue_controls]
-            )
+            self.current_message = await ctx.send(embed=embed, view=view)
 
     @commands.command()
     async def play(self, ctx, *, search):
-        # Previous play logic remains the same until playing the song
         voice_channel = ctx.author.voice.channel if ctx.author.voice else None
         if not voice_channel:
             embed = discord.Embed(
@@ -185,7 +191,85 @@ class MusicBot(commands.Cog):
         if not ctx.voice_client.is_playing() and not self.is_paused:
             await self.play_next(ctx)
 
-    # Button control methods
+    async def play_next(self, ctx):
+        try:
+            if not self.queue and self.loop_mode and self.now_playing:
+                self.queue.append(self.now_playing)
+
+            if self.queue:
+                print(f"Playing next song. Queue length: {len(self.queue)}")
+                self.now_playing = self.queue.pop(0)
+                print(f"Attempting to play: {self.now_playing['title']}")
+                
+                # Add volume to FFMPEG options
+                options = FFMPEG_OPTIONS.copy()
+                options['options'] = f"{FFMPEG_OPTIONS['options']} -filter:a volume={self.volume}"
+                
+                # Create FFmpeg audio source
+                source = await discord.FFmpegOpusAudio.from_probe(
+                    self.now_playing['url'],
+                    **options
+                )
+                
+                print("Audio source created successfully")
+                
+                def after_playing(error):
+                    if error:
+                        print(f"Error after playing: {error}")
+                    asyncio.run_coroutine_threadsafe(self.play_next(ctx), self.client.loop)
+                
+                ctx.voice_client.play(source, after=after_playing)
+                self.start_time = datetime.now()
+                print(f"Now playing: {self.now_playing['title']}")
+                
+                # Update the player message with controls
+                await self.update_player_message(ctx)
+                
+            else:
+                print("Queue is empty")
+                self.now_playing = None
+                self.start_time = None
+                await ctx.send("📪 Queue is empty!")
+                
+        except Exception as e:
+            print(f"Error in play_next: {e}")
+            await ctx.send(f"❌ An error occurred while playing: {str(e)}")
+
+    @commands.command()
+    async def queue(self, ctx):
+        if not self.queue and not self.now_playing:
+            return await ctx.send("📪 Queue is empty!")
+
+        embed = discord.Embed(
+            title="🎵 Music Queue",
+            color=discord.Color.blue()
+        )
+
+        if self.now_playing:
+            elapsed = (datetime.now() - self.start_time).total_seconds() if self.start_time else 0
+            progress = self.create_progress_bar(elapsed, self.now_playing['duration'])
+            
+            embed.add_field(
+                name="Now Playing",
+                value=f"**{self.now_playing['title']}**\n{progress}\n`{self.format_duration(elapsed)}/{self.format_duration(self.now_playing['duration'])}`",
+                inline=False
+            )
+
+        queue_list = ""
+        for i, song in enumerate(self.queue, 1):
+            queue_list += f"`{i}.` **{song['title']}** ({self.format_duration(song['duration'])}) - Requested by {song['requester']}\n"
+
+        if queue_list:
+            embed.add_field(name="Up Next", value=queue_list, inline=False)
+        
+        embed.set_footer(text=f"🔄 Loop Mode: {'On' if self.loop_mode else 'Off'}")
+        await ctx.send(embed=embed)
+
+    @commands.command()
+    async def loop(self, ctx):
+        self.loop_mode = not self.loop_mode
+        await ctx.send(f"🔄 Loop mode {'enabled' if self.loop_mode else 'disabled'}")
+
     async def pause(self, interaction):
         if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
             interaction.guild.voice_client.pause()
@@ -211,21 +295,16 @@ class MusicBot(commands.Cog):
             await interaction.followup.send("⏭️ Skipped the current song", ephemeral=True)
 
     async def previous(self, interaction):
-        # Implement previous track functionality
         await interaction.followup.send("Previous track feature coming soon!", ephemeral=True)
 
     async def volume_up(self, interaction):
         if interaction.guild.voice_client:
             self.volume = min(2.0, self.volume + 0.1)
-            if interaction.guild.voice_client.source:
-                interaction.guild.voice_client.source.volume = self.volume
             await interaction.followup.send(f"🔊 Volume set to {int(self.volume * 100)}%", ephemeral=True)
 
     async def volume_down(self, interaction):
         if interaction.guild.voice_client:
             self.volume = max(0.0, self.volume - 0.1)
-            if interaction.guild.voice_client.source:
-                interaction.guild.voice_client.source.volume = self.volume
             await interaction.followup.send(f"🔉 Volume set to {int(self.volume * 100)}%", ephemeral=True)
 
     async def shuffle(self, interaction):
@@ -235,7 +314,10 @@ class MusicBot(commands.Cog):
         else:
             await interaction.followup.send("Not enough songs in queue to shuffle!", ephemeral=True)
 
-    # Keep the previous helper methods (format_duration, create_progress_bar)
+    async def loop(self, interaction):
+        self.loop_mode = not self.loop_mode
+        await interaction.followup.send(f"🔄 Loop mode {'enabled' if self.loop_mode else 'disabled'}", ephemeral=True)
+
     def format_duration(self, seconds):
         minutes, seconds = divmod(int(seconds), 60)
         hours, minutes = divmod(minutes, 60)
