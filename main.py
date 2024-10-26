@@ -8,7 +8,7 @@ import webserver
 import os
 import subprocess
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 
 def check_ffmpeg():
     try:
@@ -28,16 +28,12 @@ FFMPEG_OPTIONS = {
     'options': '-vn -bufsize 5000k'
 }
 YDL_OPTIONS = {'format': 'bestaudio', 'noplaylist': True}
+INACTIVITY_TIMEOUT = 180  # 3 minutes in seconds
 
 class MusicControls(View):
     def __init__(self, bot):
         super().__init__(timeout=None)
         self.bot = bot
-
-    @discord.ui.button(label="Previous", style=ButtonStyle.green, emoji="⏮️")
-    async def previous_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer()
-        await self.bot.previous(interaction)
 
     @discord.ui.button(label="Stop", style=ButtonStyle.red, emoji="⏹️")
     async def stop_button(self, interaction: discord.Interaction, button: Button):
@@ -59,25 +55,6 @@ class MusicControls(View):
     async def skip_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer()
         await self.bot.skip(interaction)
-
-    @discord.ui.button(label="Like", style=ButtonStyle.green, emoji="❤️")
-    async def like_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message("Added to your favorites! (Feature coming soon)", ephemeral=True)
-
-class VolumeControls(View):
-    def __init__(self, bot):
-        super().__init__(timeout=None)
-        self.bot = bot
-
-    @discord.ui.button(label="Volume Down", style=ButtonStyle.green, emoji="🔉")
-    async def volume_down(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer()
-        await self.bot.volume_down(interaction)
-
-    @discord.ui.button(label="Volume Up", style=ButtonStyle.green, emoji="🔊")
-    async def volume_up(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer()
-        await self.bot.volume_up(interaction)
 
 class QueueControls(View):
     def __init__(self, bot):
@@ -101,9 +78,29 @@ class MusicBot(commands.Cog):
         self.now_playing = None
         self.loop_mode = False
         self.start_time = None
-        self.volume = 1.0
         self.is_paused = False
         self.current_message = None
+        self.last_activity = datetime.now()
+        self.inactivity_task = None
+
+    def cog_unload(self):
+        if self.inactivity_task:
+            self.inactivity_task.cancel()
+
+    async def check_inactivity(self, ctx):
+        while True:
+            await asyncio.sleep(10)  # Check every 10 seconds
+            if ctx.voice_client:
+                time_elapsed = (datetime.now() - self.last_activity).total_seconds()
+                if time_elapsed > INACTIVITY_TIMEOUT and not ctx.voice_client.is_playing():
+                    await ctx.send("👋 Leaving voice channel due to inactivity...")
+                    await ctx.voice_client.disconnect()
+                    self.queue.clear()
+                    self.now_playing = None
+                    break
+
+    def reset_inactivity_timer(self):
+        self.last_activity = datetime.now()
 
     async def update_player_message(self, ctx):
         if self.now_playing:
@@ -116,17 +113,12 @@ class MusicBot(commands.Cog):
             embed.add_field(name="Requested by", value=self.now_playing['requester'])
             embed.set_thumbnail(url=self.now_playing['thumbnail'])
 
-            # Create a single view for all controls
             view = discord.ui.View(timeout=None)
             
-            # Add all control buttons to the same view
             music_controls = MusicControls(self)
-            volume_controls = VolumeControls(self)
             queue_controls = QueueControls(self)
             
             for item in music_controls.children:
-                view.add_item(item)
-            for item in volume_controls.children:
                 view.add_item(item)
             for item in queue_controls.children:
                 view.add_item(item)
@@ -152,6 +144,10 @@ class MusicBot(commands.Cog):
 
         if not ctx.voice_client:
             await voice_channel.connect()
+            # Start inactivity check when joining a voice channel
+            self.inactivity_task = asyncio.create_task(self.check_inactivity(ctx))
+
+        self.reset_inactivity_timer()
 
         async with ctx.typing():
             try:
@@ -201,14 +197,9 @@ class MusicBot(commands.Cog):
                 self.now_playing = self.queue.pop(0)
                 print(f"Attempting to play: {self.now_playing['title']}")
                 
-                # Add volume to FFMPEG options
-                options = FFMPEG_OPTIONS.copy()
-                options['options'] = f"{FFMPEG_OPTIONS['options']} -filter:a volume={self.volume}"
-                
-                # Create FFmpeg audio source
                 source = await discord.FFmpegOpusAudio.from_probe(
                     self.now_playing['url'],
-                    **options
+                    **FFMPEG_OPTIONS
                 )
                 
                 print("Audio source created successfully")
@@ -220,9 +211,9 @@ class MusicBot(commands.Cog):
                 
                 ctx.voice_client.play(source, after=after_playing)
                 self.start_time = datetime.now()
+                self.reset_inactivity_timer()
                 print(f"Now playing: {self.now_playing['title']}")
                 
-                # Update the player message with controls
                 await self.update_player_message(ctx)
                 
             else:
@@ -274,12 +265,14 @@ class MusicBot(commands.Cog):
         if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
             interaction.guild.voice_client.pause()
             self.is_paused = True
+            self.reset_inactivity_timer()
             await interaction.followup.send("⏸️ Paused the music", ephemeral=True)
 
     async def resume(self, interaction):
         if interaction.guild.voice_client and self.is_paused:
             interaction.guild.voice_client.resume()
             self.is_paused = False
+            self.reset_inactivity_timer()
             await interaction.followup.send("▶️ Resumed the music", ephemeral=True)
 
     async def stop(self, interaction):
@@ -292,30 +285,20 @@ class MusicBot(commands.Cog):
     async def skip(self, interaction):
         if interaction.guild.voice_client and (interaction.guild.voice_client.is_playing() or self.is_paused):
             interaction.guild.voice_client.stop()
+            self.reset_inactivity_timer()
             await interaction.followup.send("⏭️ Skipped the current song", ephemeral=True)
-
-    async def previous(self, interaction):
-        await interaction.followup.send("Previous track feature coming soon!", ephemeral=True)
-
-    async def volume_up(self, interaction):
-        if interaction.guild.voice_client:
-            self.volume = min(2.0, self.volume + 0.1)
-            await interaction.followup.send(f"🔊 Volume set to {int(self.volume * 100)}%", ephemeral=True)
-
-    async def volume_down(self, interaction):
-        if interaction.guild.voice_client:
-            self.volume = max(0.0, self.volume - 0.1)
-            await interaction.followup.send(f"🔉 Volume set to {int(self.volume * 100)}%", ephemeral=True)
 
     async def shuffle(self, interaction):
         if len(self.queue) > 1:
             random.shuffle(self.queue)
+            self.reset_inactivity_timer()
             await interaction.followup.send("🔀 Queue shuffled!", ephemeral=True)
         else:
             await interaction.followup.send("Not enough songs in queue to shuffle!", ephemeral=True)
 
     async def loop(self, interaction):
         self.loop_mode = not self.loop_mode
+        self.reset_inactivity_timer()
         await interaction.followup.send(f"🔄 Loop mode {'enabled' if self.loop_mode else 'disabled'}", ephemeral=True)
 
     def format_duration(self, seconds):
