@@ -20,7 +20,9 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 
-FFMPEG_OPTIONS = {'options': '-vn'}
+FFMPEG_OPTIONS = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -timeout 1000000',
+    'options': '-vn -bufsize 5000k'}
 YDL_OPTIONS = {'format': 'bestaudio', 'noplaylist': True}
 
 class MusicBot(commands.Cog):
