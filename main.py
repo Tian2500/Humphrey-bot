@@ -62,6 +62,11 @@ class QueueControls(View):
         await interaction.response.defer()
         await self.bot.shuffle(interaction)
 
+    @discord.ui.button(label="Remove Last", style=ButtonStyle.red, emoji="🗑️")
+    async def remove_last_button(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer()
+        await self.bot.remove_last(interaction)
+
 class MusicBot(commands.Cog):
     def __init__(self, client):
         self.client = client
@@ -82,13 +87,14 @@ class MusicBot(commands.Cog):
         while True:
             await asyncio.sleep(10)  # Check every 10 seconds
             if ctx.voice_client:
-                time_elapsed = (datetime.now() - self.last_activity).total_seconds()
-                if time_elapsed > INACTIVITY_TIMEOUT and not ctx.voice_client.is_playing():
-                    await ctx.send("👋 Leaving voice channel due to inactivity...")
-                    await ctx.voice_client.disconnect()
-                    self.queue.clear()
-                    self.now_playing = None
-                    break
+                if not ctx.voice_client.is_playing() and not self.is_paused:
+                    time_elapsed = (datetime.now() - self.last_activity).total_seconds()
+                    if time_elapsed > INACTIVITY_TIMEOUT:
+                        await ctx.send("👋 Leaving voice channel due to inactivity...")
+                        await ctx.voice_client.disconnect()
+                        self.queue.clear()
+                        self.now_playing = None
+                        break
 
     def reset_inactivity_timer(self):
         self.last_activity = datetime.now()
@@ -198,11 +204,11 @@ class MusicBot(commands.Cog):
                 def after_playing(error):
                     if error:
                         print(f"Error after playing: {error}")
+                    self.reset_inactivity_timer()  # Reset timer when song ends
                     asyncio.run_coroutine_threadsafe(self.play_next(ctx), self.client.loop)
                 
                 ctx.voice_client.play(source, after=after_playing)
                 self.start_time = datetime.now()
-                self.reset_inactivity_timer()
                 print(f"Now playing: {self.now_playing['title']}")
                 
                 await self.update_player_message(ctx)
@@ -212,6 +218,7 @@ class MusicBot(commands.Cog):
                 self.now_playing = None
                 self.start_time = None
                 await ctx.send("📪 Queue is empty!")
+                self.reset_inactivity_timer()  # Reset timer when queue is empty
                 
         except Exception as e:
             print(f"Error in play_next: {e}")
@@ -286,6 +293,14 @@ class MusicBot(commands.Cog):
             await interaction.followup.send("🔀 Queue shuffled!", ephemeral=True)
         else:
             await interaction.followup.send("Not enough songs in queue to shuffle!", ephemeral=True)
+
+    async def remove_last(self, interaction):
+        if self.queue:
+            removed_song = self.queue.pop()
+            self.reset_inactivity_timer()
+            await interaction.followup.send(f"🗑️ Removed **{removed_song['title']}** from the queue", ephemeral=True)
+        else:
+            await interaction.followup.send("Queue is empty! Nothing to remove.", ephemeral=True)
 
     async def loop(self, interaction):
         self.loop_mode = not self.loop_mode
