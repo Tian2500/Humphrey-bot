@@ -55,7 +55,7 @@ class QueueControls(View):
     @discord.ui.button(label="Loop", style=ButtonStyle.blurple, emoji="🔄")
     async def loop_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer()
-        await self.bot.loop(interaction)
+        await self.bot.toggle_loop(interaction)
 
     @discord.ui.button(label="Shuffle Queue", style=ButtonStyle.blurple, emoji="🔀")
     async def shuffle_button(self, interaction: discord.Interaction, button: Button):
@@ -139,6 +139,7 @@ class MusicBot(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
+        # Connect if not already connected
         if not ctx.voice_client:
             await voice_channel.connect()
             # Start inactivity check when joining a voice channel
@@ -149,34 +150,42 @@ class MusicBot(commands.Cog):
         async with ctx.typing():
             try:
                 with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-                    info = ydl.extract_info(f"ytsearch:{search}", download=False)
-                    if 'entries' in info:
-                        info = info['entries'][0]
-                    
+                    # If user passed a URL, use it directly. Otherwise, do a YouTube search.
+                    if search.startswith("http://") or search.startswith("https://"):
+                        info = ydl.extract_info(search, download=False)
+                    else:
+                        info = ydl.extract_info(f"ytsearch:{search}", download=False)
+                        if "entries" in info and info["entries"]:
+                            info = info["entries"][0]
+
                     song_info = {
-                        'url': info['url'],
-                        'title': info['title'],
-                        'duration': info.get('duration', 0),
-                        'thumbnail': info.get('thumbnail', ''),
-                        'requester': ctx.author.name
+                        "url": info["url"],
+                        "title": info.get("title", "Unknown title"),
+                        "duration": info.get("duration", 0),
+                        "thumbnail": info.get("thumbnail", ""),
+                        "requester": ctx.author.name,
                     }
-                    
+
                     self.queue.append(song_info)
-                    
+
                     embed = discord.Embed(
                         title="🎵 Added to Queue",
                         description=f"**{song_info['title']}**",
-                        color=discord.Color.blue()
+                        color=discord.Color.blue(),
                     )
-                    embed.add_field(name="Duration", value=self.format_duration(song_info['duration']))
-                    embed.set_thumbnail(url=song_info['thumbnail'])
+                    embed.add_field(
+                        name="Duration",
+                        value=self.format_duration(song_info["duration"]),
+                    )
+                    embed.set_thumbnail(url=song_info["thumbnail"])
                     await ctx.send(embed=embed)
 
             except Exception as e:
+                print(f"[PLAY ERROR] {type(e).__name__}: {e}")
                 embed = discord.Embed(
                     title="❌ Error",
-                    description=f"An error occurred: {str(e)}",
-                    color=discord.Color.red()
+                    description=f"An error occurred: `{type(e).__name__}: {e}`",
+                    color=discord.Color.red(),
                 )
                 await ctx.send(embed=embed)
                 return
@@ -302,7 +311,7 @@ class MusicBot(commands.Cog):
         else:
             await interaction.followup.send("Queue is empty! Nothing to remove.", ephemeral=True)
 
-    async def loop(self, interaction):
+    async def toggle_loop(self, interaction):
         self.loop_mode = not self.loop_mode
         self.reset_inactivity_timer()
         await interaction.followup.send(f"🔄 Loop mode {'enabled' if self.loop_mode else 'disabled'}", ephemeral=True)
